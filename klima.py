@@ -20,7 +20,7 @@ KLIMA         = "climate.klimaanlage"
 SENSOR_INNEN  = "sensor.timmerflotte_temp_hmd_sensor_temperature"
 SENSOR_AUSSEN = "sensor.klimaanlage_outdoor"
 ZIEL_HELFER   = "input_number.klima_zieltemperatur"
-ANWESENHEIT   = "group.klima_anwesenheit"
+PERSONEN      = ["person.leon", "person.tina"]   # anwesend = mindestens eine Person "home"
 FENSTER       = ["binary_sensor.fensterlinks_opening",
                  "binary_sensor.fensterrechts_opening"]
 TUER          = "binary_sensor.tur_opening"
@@ -71,6 +71,14 @@ def _f(entity_id, default=None):
     """Zustand als float, sonst default (deckt unavailable/unknown/fehlend ab)."""
     try:
         return float(state.get(entity_id))
+    except Exception:
+        return default
+
+
+def _s(entity_id, default=None):
+    """Zustand als String; default statt Fehler, wenn die Entitaet fehlt."""
+    try:
+        return state.get(entity_id)
     except Exception:
         return default
 
@@ -144,7 +152,7 @@ def _regelung(saison, innen, ziel):
     Inverter-Philosophie: einmal an, bleibt die Anlage im Modus und regelt
     selbst. Aus geht sie nur bei Saisonende, Sicherheits-Aus oder wenn der
     Raum deutlich ueber das Ziel hinausschiesst."""
-    ist = state.get(KLIMA)
+    ist = _s(KLIMA)
 
     if saison == "kuehlen":
         _latch_setzen("aus")
@@ -189,7 +197,7 @@ def _regelung(saison, innen, ziel):
 # =====================  Befehle an die Anlage  =====================
 
 def _ausschalten(grund):
-    if state.get(KLIMA) != "off":
+    if _s(KLIMA) != "off":
         _befehl_merken()
         climate.set_hvac_mode(entity_id=KLIMA, hvac_mode="off")
         log.info(f"Klima AUS -> {grund}")
@@ -209,7 +217,7 @@ def _einschalten(modus, ziel, grund):
                      f"({delta / 60:.0f} von {MODUSWECHSEL_SPERRE_MIN} min)")
             return
 
-    ist_modus = state.get(KLIMA)
+    ist_modus = _s(KLIMA)
     try:
         ist_ziel = float(state.get(f"{KLIMA}.temperature"))
     except Exception:
@@ -225,7 +233,7 @@ def _einschalten(modus, ziel, grund):
 
 def _luefter():
     """Nachts Quiet, tagsuebers auto — nur wenn die Anlage laeuft."""
-    if state.get(KLIMA) == "off":
+    if _s(KLIMA) == "off":
         return
     jetzt = datetime.now().time()
     nachts = jetzt >= NACHT_VON or jetzt < NACHT_BIS
@@ -242,24 +250,34 @@ def _luefter():
 # =====================  Hauptsteuerung  =====================
 
 @time_trigger("startup", "cron(*/5 * * * *)", "cron(0 22 * * *)", "cron(0 8 * * *)")
-@state_trigger(SENSOR_INNEN, SENSOR_AUSSEN, ZIEL_HELFER, ANWESENHEIT, AUTOMATIK,
-               FENSTER[0], FENSTER[1])
+@state_trigger(SENSOR_INNEN, SENSOR_AUSSEN, ZIEL_HELFER, AUTOMATIK,
+               PERSONEN[0], PERSONEN[1], FENSTER[0], FENSTER[1])
 @event_trigger("timer.finished", f"entity_id == '{PAUSE_TIMER}'")
 def klima_hauptsteuerung(**kwargs):
     task.unique("klima_hauptsteuerung")
 
-    if state.get(AUTOMATIK) != "on":
+    if _s(AUTOMATIK) != "on":
         return
 
     # Sicherheits-Aus schlaegt alles, auch eine laufende Pause
-    fenster_offen = [f for f in FENSTER if state.get(f) == "on"]
-    abwesend = state.get(ANWESENHEIT) == "not_home"
+    fenster_offen = [f for f in FENSTER if _s(f) == "on"]
+    personen = {p: _s(p) for p in PERSONEN}
+    bekannt = {p: z for p, z in personen.items() if z is not None}
+    if not bekannt:
+        _melden("anwesenheit", "Klima: Personen-Entitaeten fehlen",
+                f"Keine der Entitaeten {', '.join(PERSONEN)} existiert — die "
+                f"Abwesenheits-Abschaltung ist ausser Funktion. "
+                f"Entity-IDs im Konfigurationsblock von klima.py anpassen.")
+        abwesend = False
+    else:
+        _entwarnen("anwesenheit")
+        abwesend = not any(z == "home" for z in bekannt.values())
     if fenster_offen or abwesend:
         grund = "Fenster offen" if fenster_offen else "niemand zuhause"
         _ausschalten(f"{grund} (Sicherheits-Aus)")
         return
 
-    if state.get(PAUSE_TIMER) == "active":
+    if _s(PAUSE_TIMER) == "active":
         return
 
     innen = _f(SENSOR_INNEN)
@@ -291,7 +309,7 @@ def klima_manueller_eingriff(entity_id=None, old_state=None, new_state=None, **k
 
     Eigene Befehle des Scripts werden doppelt ausgefiltert: ueber die
     fehlende user_id und ueber die Karenzzeit nach dem letzten eigenen Befehl."""
-    if state.get(AUTOMATIK) != "on":
+    if _s(AUTOMATIK) != "on":
         return
     if old_state is None or new_state is None:
         return
