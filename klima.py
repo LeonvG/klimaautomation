@@ -271,7 +271,7 @@ def klima_hauptsteuerung(**kwargs):
         abwesend = False
     else:
         _entwarnen("anwesenheit")
-        abwesend = not any(z == "home" for z in bekannt.values())
+        abwesend = not any([z == "home" for z in bekannt.values()])
     if fenster_offen or abwesend:
         grund = "Fenster offen" if fenster_offen else "niemand zuhause"
         _ausschalten(f"{grund} (Sicherheits-Aus)")
